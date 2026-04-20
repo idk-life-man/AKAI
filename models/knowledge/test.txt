@@ -1,0 +1,1 @@
+AKAI is a personal AI assistant built on Windows. It uses DeepSeek V3 for everyday tasks, DeepSeek R1 for deep reasoning, and Ollama Mistral as a local fallback. It is stored in C:/AKAI and built by its owner from scratch.

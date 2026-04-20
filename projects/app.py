@@ -1,0 +1,222 @@
+import streamlit as st
+from openai import OpenAI
+from dotenv import load_dotenv
+from tavily import TavilyClient
+import chromadb
+from sentence_transformers import SentenceTransformer
+import os
+import json
+from datetime import datetime
+from pypdf import PdfReader
+
+load_dotenv("C:/AKAI/config/.env")
+
+MEMORY_PATH = "C:/AKAI/config/memory.json"
+SYSTEM_PROMPT_PATH = "C:/AKAI/config/system_prompt.txt"
+KNOWLEDGE_PATH = "C:/AKAI/models/knowledge"
+DB_PATH = "C:/AKAI/models/chromadb"
+
+tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+chroma_client = chromadb.PersistentClient(path=DB_PATH)
+collection = chroma_client.get_or_create_collection("knowledge")
+
+def load_system_prompt():
+    with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+def load_memory():
+    with open(MEMORY_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_memory(memory):
+    with open(MEMORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(memory, f, indent=2)
+
+def summarize_conversation(client, messages, model):
+    summary_prompt = f"""Summarize this conversation in 3-5 bullet points. 
+Focus on: decisions made, facts learned about the user, tasks completed, preferences mentioned.
+Be specific and concise. No fluff.
+
+Conversation:
+{json.dumps(messages, indent=2)}"""
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": summary_prompt}]
+    )
+    return response.choices[0].message.content
+
+def needs_search(client, model, user_message):
+    check = client.chat.completions.create(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": f"""Does this message require current/live information from the web to answer well? 
+Examples that need search: news, prices, recent events, current data, anything time-sensitive.
+Examples that don't: coding help, general knowledge, math, personal tasks.
+Reply with just YES or NO.
+
+Message: {user_message}"""
+        }]
+    )
+    return check.choices[0].message.content.strip().upper() == "YES"
+
+def web_search(query):
+    results = tavily.search(query=query, max_results=5)
+    formatted = []
+    for r in results["results"]:
+        formatted.append(f"Source: {r['url']}\n{r['content']}")
+    return "\n\n".join(formatted)
+
+def chunk_text(text, chunk_size=500, overlap=50):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[i:i + chunk_size])
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+def ingest_text(text, filename):
+    chunks = chunk_text(text)
+    embeddings = embed_model.encode(chunks).tolist()
+    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+        collection.upsert(
+            ids=[f"{filename}_chunk_{i}"],
+            embeddings=[embedding],
+            documents=[chunk],
+            metadatas=[{"source": filename}]
+        )
+    return len(chunks)
+
+def query_knowledge(query, n_results=3):
+    embedding = embed_model.encode([query]).tolist()
+    results = collection.query(query_embeddings=embedding, n_results=n_results)
+    if not results["documents"][0]:
+        return None
+    chunks = results["documents"][0]
+    sources = [m["source"] for m in results["metadatas"][0]]
+    formatted = []
+    for chunk, source in zip(chunks, sources):
+        formatted.append(f"Source: {source}\n{chunk}")
+    return "\n\n".join(formatted)
+
+st.set_page_config(page_title="AKAI", page_icon="🤖", layout="centered")
+st.title("🤖 AKAI")
+
+# --- Sidebar ---
+model_choice = st.sidebar.selectbox(
+    "Choose your model",
+    ["DeepSeek V3", "DeepSeek R1", "Ollama Mistral"]
+)
+
+if model_choice in ["DeepSeek V3", "DeepSeek R1"]:
+    client = OpenAI(
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        base_url="https://api.deepseek.com"
+    )
+    model = "deepseek-chat" if model_choice == "DeepSeek V3" else "deepseek-reasoner"
+else:
+    client = OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
+    model = "mistral"
+
+if st.sidebar.button("💾 Save & Summarize Session"):
+    if st.session_state.get("messages"):
+        memory = load_memory()
+        summary = summarize_conversation(client, st.session_state.messages, model)
+        memory["conversations"].append({
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "model": model_choice,
+            "summary": summary
+        })
+        memory["conversations"] = memory["conversations"][-20:]
+        save_memory(memory)
+        st.sidebar.success("Session saved!")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📚 Knowledge Base")
+
+uploaded_file = st.sidebar.file_uploader("Upload a file", type=["txt", "pdf", "md"])
+if uploaded_file and st.sidebar.button("➕ Ingest File"):
+    with st.spinner(f"Ingesting {uploaded_file.name}..."):
+        if uploaded_file.name.endswith(".pdf"):
+            reader = PdfReader(uploaded_file)
+            text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        else:
+            text = uploaded_file.read().decode("utf-8")
+        
+        chunks = ingest_text(text, uploaded_file.name)
+        
+        save_path = os.path.join(KNOWLEDGE_PATH, uploaded_file.name)
+        with open(save_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        st.sidebar.success(f"✅ {chunks} chunks ingested!")
+
+st.sidebar.markdown("---")
+kb_files = [f for f in os.listdir(KNOWLEDGE_PATH) if f.endswith((".txt", ".pdf", ".md"))]
+if kb_files:
+    st.sidebar.markdown("**Files in knowledge base:**")
+    for f in kb_files:
+        st.sidebar.caption(f"📄 {f}")
+else:
+    st.sidebar.caption("No files ingested yet.")
+
+# --- Chat ---
+if "messages" not in st.session_state:
+    system_prompt = load_system_prompt()
+    memory = load_memory()
+    if memory["conversations"]:
+        recent = memory["conversations"][-5:]
+        memory_text = "\n\n".join([f"[{c['date']}]\n{c['summary']}" for c in recent])
+        full_prompt = f"{system_prompt}\n\nRECENT CONVERSATION HISTORY:\n{memory_text}"
+    else:
+        full_prompt = system_prompt
+    st.session_state.messages = [{"role": "system", "content": full_prompt}]
+
+for msg in st.session_state.messages:
+    if msg["role"] != "system":
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+if prompt := st.chat_input("Say something..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        reply_placeholder = st.empty()
+        full_reply = ""
+        messages_to_send = st.session_state.messages.copy()
+
+        # RAG
+        rag_results = query_knowledge(prompt)
+        if rag_results:
+            messages_to_send.append({
+                "role": "user",
+                "content": f"Relevant info from your knowledge base:\n\n{rag_results}\n\nUse this if relevant to answer: {prompt}"
+            })
+
+        # Web search
+        if model_choice != "Ollama Mistral" and needs_search(client, model, prompt):
+            reply_placeholder.markdown("🔍 Searching the web...")
+            search_results = web_search(prompt)
+            messages_to_send.append({
+                "role": "user",
+                "content": f"Web search results:\n\n{search_results}\n\nNow answer: {prompt}"
+            })
+
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages_to_send,
+            stream=True
+        )
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            full_reply += delta
+            reply_placeholder.markdown(full_reply + "▌")
+
+        reply_placeholder.markdown(full_reply)
+
+    st.session_state.messages.append({"role": "assistant", "content": full_reply})
