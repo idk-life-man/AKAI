@@ -1,8 +1,61 @@
 import os
 import subprocess
 import json
+from playwright.sync_api import sync_playwright
 
 AKAI_ROOT = "C:/AKAI"
+
+# Browser instance held globally so multiple tool calls can reuse it
+_browser = None
+_page = None
+_playwright = None
+
+def _get_browser():
+    global _browser, _page, _playwright
+    if _browser is None:
+        _playwright = sync_playwright().start()
+        _browser = _playwright.chromium.launch(headless=False)
+        _page = _browser.new_page()
+    return _page
+
+def browser_goto(url: str) -> str:
+    page = _get_browser()
+    page.goto(url, timeout=30000)
+    return f"Navigated to {url}. Title: {page.title()}"
+
+def browser_read(selector: str = "body") -> str:
+    page = _get_browser()
+    try:
+        text = page.locator(selector).inner_text(timeout=5000)
+        return text[:5000]  # Cap at 5k chars
+    except Exception as e:
+        return f"Error reading {selector}: {str(e)}"
+
+def browser_click(selector: str) -> str:
+    page = _get_browser()
+    try:
+        page.locator(selector).click(timeout=5000)
+        return f"Clicked {selector}"
+    except Exception as e:
+        return f"Error clicking {selector}: {str(e)}"
+
+def browser_fill(selector: str, text: str) -> str:
+    page = _get_browser()
+    try:
+        page.locator(selector).fill(text, timeout=5000)
+        return f"Filled {selector} with text"
+    except Exception as e:
+        return f"Error filling {selector}: {str(e)}"
+
+def browser_close() -> str:
+    global _browser, _page, _playwright
+    if _browser:
+        _browser.close()
+        _playwright.stop()
+        _browser = None
+        _page = None
+        _playwright = None
+    return "Browser closed"
 
 def read_file(path: str) -> str:
     full_path = os.path.join(AKAI_ROOT, path)
@@ -105,6 +158,75 @@ TOOLS = [
                 "required": ["code"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_goto",
+            "description": "Open a URL in the browser. Returns the page title.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to navigate to e.g. 'https://google.com'"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_read",
+            "description": "Read text content from the current page. Defaults to whole body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector e.g. 'h1', '.article-body', '#main'. Default is 'body'."}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click an element on the current page",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the element to click"}
+                },
+                "required": ["selector"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_fill",
+            "description": "Type text into an input field",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the input"},
+                    "text": {"type": "string", "description": "Text to type"}
+                },
+                "required": ["selector", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_close",
+            "description": "Close the browser when done",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
@@ -112,5 +234,10 @@ TOOL_MAP = {
     "read_file": read_file,
     "write_file": write_file,
     "list_files": list_files,
-    "run_python": run_python
+    "run_python": run_python,
+    "browser_goto": browser_goto,
+    "browser_read": browser_read,
+    "browser_click": browser_click,
+    "browser_fill": browser_fill,
+    "browser_close": browser_close
 }
