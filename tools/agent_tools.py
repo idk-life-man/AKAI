@@ -52,33 +52,118 @@ def run_python(code: str) -> str:
 def browser_goto(url: str) -> str:
     code = f"""
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+import time
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=False)
-    page = browser.new_page()
-    page.goto('{url}', timeout=30000)
+    context = browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport={{'width': 1280, 'height': 720}},
+        locale='en-US',
+        timezone_id='America/New_York'
+    )
+    page = context.new_page()
+    stealth_sync(page)
+    page.goto('{url}', timeout=30000, wait_until='networkidle')
+    time.sleep(2)
     print('TITLE:' + page.title())
     browser.close()
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, timeout=30
+        capture_output=True, text=True, timeout=45
     )
     return result.stdout or result.stderr
 
 def browser_read(url: str) -> str:
     code = f"""
 from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+import time
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
-    page.goto('{url}', timeout=30000)
+    context = browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport={{'width': 1280, 'height': 720}},
+        locale='en-US',
+        timezone_id='America/New_York'
+    )
+    page = context.new_page()
+    stealth_sync(page)
+    page.goto('{url}', timeout=30000, wait_until='networkidle')
+    time.sleep(2)
     text = page.inner_text('body')
-    print(text[:5000])
+    print(text[:8000])
     browser.close()
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, timeout=30
+        capture_output=True, text=True, timeout=45
+    )
+    return result.stdout or result.stderr
+
+def browser_screenshot(url: str) -> str:
+    screenshot_path = os.path.join(AKAI_ROOT, "logs", "screenshot.png")
+    os.makedirs(os.path.join(AKAI_ROOT, "logs"), exist_ok=True)
+    code = f"""
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+import time
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport={{'width': 1280, 'height': 720}},
+        locale='en-US',
+        timezone_id='America/New_York'
+    )
+    page = context.new_page()
+    stealth_sync(page)
+    page.goto('{url}', timeout=30000, wait_until='networkidle')
+    time.sleep(2)
+    page.screenshot(path=r'{screenshot_path}', full_page=True)
+    print('Screenshot saved to {screenshot_path}')
+    browser.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=45
+    )
+    return result.stdout or result.stderr
+
+def browser_search_google(query: str) -> str:
+    safe_query = query.replace("'", "\\'").replace('"', '\\"')
+    code = f"""
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
+import time
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport={{'width': 1280, 'height': 720}},
+        locale='en-US',
+        timezone_id='America/New_York'
+    )
+    page = context.new_page()
+    stealth_sync(page)
+    page.goto('https://www.google.com', timeout=30000, wait_until='networkidle')
+    time.sleep(1)
+    page.fill('textarea[name="q"]', '{safe_query}')
+    page.keyboard.press('Enter')
+    page.wait_for_load_state('networkidle')
+    time.sleep(2)
+    text = page.inner_text('body')
+    print(text[:8000])
+    browser.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=45
     )
     return result.stdout or result.stderr
 
@@ -161,13 +246,41 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_read",
-            "description": "Navigate to a URL and read the full text content of the page. Use this for research, scraping, and reading websites.",
+            "description": "Navigate to a URL and read the full text content of the page. Use for research, reading articles, documentation, pricing pages.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "Full URL to read content from"}
                 },
                 "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Take a screenshot of a URL and save it to C:/AKAI/logs/screenshot.png.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to screenshot"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_search_google",
+            "description": "Search Google for a query and return the results page text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query to enter into Google"}
+                },
+                "required": ["query"]
             }
         }
     },
@@ -192,5 +305,7 @@ TOOL_MAP = {
     "run_python": run_python,
     "browser_goto": browser_goto,
     "browser_read": browser_read,
+    "browser_screenshot": browser_screenshot,
+    "browser_search_google": browser_search_google,
     "browser_close": browser_close
 }
