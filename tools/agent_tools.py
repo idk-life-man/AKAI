@@ -16,7 +16,7 @@ def write_file(path: str, content: str) -> str:
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(content)
-    return f"✅ Written to {path}"
+    return f"Written to {path}"
 
 def list_files(subpath: str = "") -> str:
     full_path = os.path.join(AKAI_ROOT, subpath)
@@ -24,7 +24,6 @@ def list_files(subpath: str = "") -> str:
         return f"Error: {subpath} does not exist."
     result = []
     for root, dirs, files in os.walk(full_path):
-        # Skip venv and chromadb
         dirs[:] = [d for d in dirs if d not in ["venv", "chromadb"]]
         level = root.replace(full_path, "").count(os.sep)
         indent = "  " * level
@@ -49,7 +48,6 @@ def run_python(code: str) -> str:
     except Exception as e:
         return f"Error: {str(e)}"
 
-# Tool definitions for DeepSeek API
 TOOLS = [
     {
         "type": "function",

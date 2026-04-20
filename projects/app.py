@@ -8,6 +8,14 @@ import os
 import json
 from datetime import datetime
 from pypdf import PdfReader
+import sys
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("agent_tools", "C:/AKAI/tools/agent_tools.py")
+agent_tools_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(agent_tools_module)
+TOOLS = agent_tools_module.TOOLS
+TOOL_MAP = agent_tools_module.TOOL_MAP
 
 load_dotenv("C:/AKAI/config/.env")
 
@@ -134,6 +142,11 @@ if st.sidebar.button("💾 Save & Summarize Session"):
         st.sidebar.success("Session saved!")
 
 st.sidebar.markdown("---")
+agent_mode = st.sidebar.toggle("🤖 Agent Mode", value=False)
+if agent_mode:
+    st.sidebar.warning("⚠️ Agent can read/write files and run code in C:/AKAI")
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 Knowledge Base")
 
 uploaded_file = st.sidebar.file_uploader("Upload a file", type=["txt", "pdf", "md"])
@@ -144,13 +157,13 @@ if uploaded_file and st.sidebar.button("➕ Ingest File"):
             text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
         else:
             text = uploaded_file.read().decode("utf-8")
-        
+
         chunks = ingest_text(text, uploaded_file.name)
-        
+
         save_path = os.path.join(KNOWLEDGE_PATH, uploaded_file.name)
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        
+
         st.sidebar.success(f"✅ {chunks} chunks ingested!")
 
 st.sidebar.markdown("---")
@@ -206,17 +219,57 @@ if prompt := st.chat_input("Say something..."):
                 "content": f"Web search results:\n\n{search_results}\n\nNow answer: {prompt}"
             })
 
-        stream = client.chat.completions.create(
-            model=model,
-            messages=messages_to_send,
-            stream=True
-        )
+        # Agent mode
+        if agent_mode and model_choice != "Ollama Mistral":
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages_to_send,
+                tools=TOOLS,
+                tool_choice="auto"
+            )
 
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            full_reply += delta
-            reply_placeholder.markdown(full_reply + "▌")
+            while response.choices[0].finish_reason == "tool_calls":
+                tool_calls = response.choices[0].message.tool_calls
+                messages_to_send.append(response.choices[0].message)
 
-        reply_placeholder.markdown(full_reply)
+                for tool_call in tool_calls:
+                    fn_name = tool_call.function.name
+                    fn_args = json.loads(tool_call.function.arguments)
+
+                    if fn_name in ["write_file", "run_python"]:
+                        reply_placeholder.markdown(f"⚠️ Agent wants to **{fn_name}**:\n```\n{json.dumps(fn_args, indent=2)}\n```")
+
+                    result = TOOL_MAP[fn_name](**fn_args)
+                    reply_placeholder.markdown(f"🔧 `{fn_name}` → {result[:100]}...")
+
+                    messages_to_send.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages_to_send,
+                    tools=TOOLS,
+                    tool_choice="auto"
+                )
+
+            full_reply = response.choices[0].message.content or ""
+            reply_placeholder.markdown(full_reply)
+
+        else:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=messages_to_send,
+                stream=True
+            )
+
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                full_reply += delta
+                reply_placeholder.markdown(full_reply + "▌")
+
+            reply_placeholder.markdown(full_reply)
 
     st.session_state.messages.append({"role": "assistant", "content": full_reply})
